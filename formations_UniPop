@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <title>Dernières formations UniPop</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    :root{
+      --u-navy:#00164a;
+      --u-accent:#f3c100;
+      --u-card:#ffffff;
+      --u-text:#f7f9ff;
+    }
+    *{box-sizing:border-box;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}
+    body{margin:0;background:var(--u-navy);color:var(--u-text);}
+    .page{max-width:1200px;margin:0 auto;padding:24px 16px 48px;}
+    h1{margin:0 0 10px;font-size:28px;}
+    p.sub{margin:0 0 24px;opacity:.85;}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;}
+    .card{
+      background:var(--u-card);color:#00164a;
+      border-radius:12px;
+      padding:16px;
+      box-shadow:0 8px 20px rgba(0,0,0,.25);
+      display:flex;flex-direction:column;gap:8px;
+    }
+    .date{font-size:14px;font-weight:600;opacity:.8;}
+    .title{font-size:16px;font-weight:700;line-height:1.3;margin:0;}
+    .meta{font-size:14px;display:flex;flex-wrap:wrap;gap:8px;opacity:.9;margin-top:4px;}
+    .badge{padding:2px 8px;border-radius:999px;border:1px solid rgba(0,0,0,.1);font-size:12px;}
+    .price{margin-left:auto;font-weight:700;}
+    .link{margin-top:auto;font-size:14px;font-weight:600;text-decoration:none;color:var(--u-navy);}
+    .link span{border-bottom:1px solid currentColor;}
+    .error{margin-top:16px;color:#ffdddd;background:#661111;padding:8px 10px;border-radius:8px;font-size:14px;}
+  </style>
+</head>
+<body>
+  <div class="page">
+    <h1>Dernières formations UniPop</h1>
+    <p class="sub">Les prochains cours proposés par l’Université populaire (prestataire&nbsp;: UniPop).</p>
+    <div id="courses" class="grid"></div>
+    <div id="msg"></div>
+  </div>
+
+  <script>
+    // 👉 ICI : colle l’URL complète du request "featured_courses" depuis Firefox
+    const API_URL = 'https://www.unipop.lu/wp-json/XXX/featured_courses?filter[orderby]=meta_value_num&filter[meta_key]=start_date&filter[order]=asc&per_page=100';
+
+    async function loadCourses(){
+      const container = document.getElementById('courses');
+      const msg = document.getElementById('msg');
+
+      try{
+        const res = await fetch(API_URL);
+        if(!res.ok) throw new Error('Erreur API: ' + res.status);
+        const data = await res.json();
+
+        // WordPress renvoie normalement un tableau direct
+        const allCourses = Array.isArray(data) ? data : (data.items || []);
+
+        // --- Filtre "UniPop" sur différents champs possibles (acf / meta etc.)
+        const onlyUniPop = allCourses.filter(course => {
+          const acf = course.acf || {};
+          const meta = course.meta || {};
+          const cand = [
+            acf.provider,
+            acf.prestataire,
+            acf.organizer,
+            acf.organisateur,
+            meta.provider,
+            meta.prestataire
+          ].filter(Boolean).join(' ').toLowerCase();
+          return cand.includes('unipop');
+        });
+
+        // --- Dates : on essaie plusieurs champs possibles
+        function getDate(c, keyList){
+          const acf = c.acf || {};
+          const meta = c.meta || {};
+          for(const k of keyList){
+            if(acf[k]) return acf[k];
+            if(meta[k]) return meta[k];
+            if(c[k]) return c[k];
+          }
+          return '';
+        }
+
+        // sorte par date de début
+        onlyUniPop.sort((a,b) => {
+          const da = new Date(getDate(a,['start_date','date_debut','dateStart']));
+          const db = new Date(getDate(b,['start_date','date_debut','dateStart']));
+          return da - db;
+        });
+
+        // on limite p.ex. aux 12 prochaines formations
+        const latest = onlyUniPop.slice(0, 12);
+
+        if(latest.length === 0){
+          msg.innerHTML = '<div class="error">Aucune formation UniPop trouvée pour le moment.</div>';
+          return;
+        }
+
+        container.innerHTML = '';
+        latest.forEach(course => {
+          const acf = course.acf || {};
+          const meta = course.meta || {};
+
+          const title = (course.title && course.title.rendered)
+                        || acf.title || meta.title || 'Titre à définir';
+
+          const start = getDate(course,['start_date','date_debut','dateStart']);
+          const end   = getDate(course,['end_date','date_fin','dateEnd']);
+
+          const place = acf.location || acf.lieu || meta.location || meta.lieu || '';
+          const level = acf.level || acf.niveau || meta.level || meta.niveau || '';
+          const price = acf.price || acf.prix || meta.price || meta.prix || '';
+
+          const url   = course.link || acf.url || meta.url || '#';
+
+          const dateLabel = start
+            ? (end && end !== start ? `${start} – ${end}` : start)
+            : '';
+
+          const card = document.createElement('article');
+          card.className = 'card';
+          card.innerHTML = `
+            <div class="date">${dateLabel}</div>
+            <h2 class="title">${title}</h2>
+            <div class="meta">
+              ${place ? `<span class="badge">${place}</span>` : ''}
+              ${level ? `<span class="badge">${level}</span>` : ''}
+              ${price ? `<span class="badge price">${price}</span>` : ''}
+            </div>
+            <a class="link" href="${url}" target="_blank" rel="noopener">
+              <span>Voir le détail du cours</span>
+            </a>
+          `;
+          container.appendChild(card);
+        });
+
+      }catch(err){
+        console.error(err);
+        msg.innerHTML = '<div class="error">Impossible de charger les formations. Merci de réessayer plus tard.</div>';
+      }
+    }
+
+    loadCourses();
+  </script>
+</body>
+</html>
