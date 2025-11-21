@@ -95,68 +95,83 @@
       border-radius:8px;
       font-size:14px;
     }
-    .loading{
-      margin-top:16px;
-      font-size:14px;
-      opacity:.9;
-    }
   </style>
 </head>
 <body>
   <div class="page">
     <h1>Dernières formations UniPop</h1>
-    <p class="sub">Les prochains cours proposés par l’Université populaire (prestataire&nbsp;: UniPop).</p>
-    <div id="status" class="loading">Chargement des formations…</div>
+    <p class="sub">
+      Les prochains cours proposés par l’Université populaire (prestataire : UniPop).
+    </p>
     <div id="courses" class="grid"></div>
     <div id="msg"></div>
   </div>
 
   <script>
-    // API officielle UniPop (triée par date de début)
+    // API officielle Unipop – tous les featured_courses
     const API_URL = 'https://www.unipop.lu/wp-json/wp/v2/featured_courses?filter[orderby]=meta_value_num&filter[meta_key]=start_date&filter[order]=asc&per_page=100';
 
     async function loadCourses(){
       const container = document.getElementById('courses');
       const msg = document.getElementById('msg');
-      const status = document.getElementById('status');
 
       try{
         const res = await fetch(API_URL);
         if(!res.ok) throw new Error('Erreur API: ' + res.status);
         const data = await res.json();
 
-        // WordPress renvoie normalement un tableau direct
+        // Normalement: tableau direct de posts
         const allCourses = Array.isArray(data) ? data : (data.items || []);
 
-        // 👉 ERSTER SCHRITT: NOCH KEIN FILTER, WIR ZEIGEN ALLE
-        // (später können wir hier auf UniPop einschränken, wenn wir die Felder genau kennen)
-        const onlyUniPop = allCourses;
-
-        // Hilfsfunktion für Datumsfelder (verschiedene Feldnamen möglich)
-        function getDate(c, keyList){
-          const acf = c.acf || {};
-          const meta = c.meta || {};
-          for(const k of keyList){
-            if(acf[k]) return acf[k];
-            if(meta[k]) return meta[k];
-            if(c[k]) return c[k];
+        // --- Helper: valeur d’un champ sur différents endroits
+        function getFrom(obj, keys){
+          if(!obj) return '';
+          for(const k of keys){
+            if(obj[k]) return obj[k];
           }
           return '';
         }
 
-        // Sortierung nach Start-Datum
+        // --- On essaie le provider dans acf / meta etc.
+        const onlyUniPop = allCourses.filter(course => {
+          const acf  = course.acf  || {};
+          const meta = course.meta || {};
+          const provider = [
+            getFrom(acf,  ['provider','prestataire','organizer','organisateur']),
+            getFrom(meta, ['provider','prestataire','organizer','organisateur'])
+          ].join(' ').toLowerCase();
+
+          // si aucun provider trouvé, on garde pour l’instant tout
+          if(!provider) return true;
+
+          // sinon, on ne garde que ceux où "unipop" apparaît
+          return provider.includes('unipop');
+        });
+
+        // --- Dates (début / fin)
+        function getDate(c, keyList){
+          const acf  = c.acf  || {};
+          const meta = c.meta || {};
+          for(const k of keyList){
+            if(acf[k])  return acf[k];
+            if(meta[k]) return meta[k];
+            if(c[k])    return c[k];
+          }
+          return '';
+        }
+
+        // tri par date de début
         onlyUniPop.sort((a,b) => {
           const da = new Date(getDate(a,['start_date','date_debut','dateStart']));
           const db = new Date(getDate(b,['start_date','date_debut','dateStart']));
           return da - db;
         });
 
-        // Nur die nächsten 12 Kurse
+        // on affiche max 12
         const latest = onlyUniPop.slice(0, 12);
 
-        status.textContent = '';
         if(latest.length === 0){
-          msg.innerHTML = '<div class="error">Aucune formation trouvée pour le moment.</div>';
+          msg.innerHTML = '<div class="error">Aucune formation UniPop trouvée pour le moment.</div>';
           return;
         }
 
@@ -165,49 +180,22 @@
           const acf  = course.acf  || {};
           const meta = course.meta || {};
 
-          const title = (course.title && course.title.rendered)
-                        || acf.title || meta.title || 'Titre à définir';
+          const title =
+            (course.title && course.title.rendered) ||
+            getFrom(acf,  ['title','titre','intitule']) ||
+            getFrom(meta, ['title','titre','intitule']) ||
+            'Titre à définir';
 
           const start = getDate(course,['start_date','date_debut','dateStart']);
           const end   = getDate(course,['end_date','date_fin','dateEnd']);
 
-          const place = acf.location || acf.lieu || meta.location || meta.lieu || '';
-          const level = acf.level || acf.niveau || meta.level || meta.niveau || '';
-          const price = acf.price || acf.prix || meta.price || meta.prix || '';
+          const place = getFrom(acf,  ['location','lieu']) ||
+                        getFrom(meta, ['location','lieu']);
 
-          const url   = course.link || acf.url || meta.url || '#';
+          const level = getFrom(acf,  ['level','niveau']) ||
+                        getFrom(meta, ['level','niveau']);
 
-          const dateLabel = start
-            ? (end && end !== start ? `${start} – ${end}` : start)
-            : '';
+          const price = getFrom(acf,  ['price','prix']) ||
+                        getFrom(meta, ['price','prix']);
 
-          const card = document.createElement('article');
-          card.className = 'card';
-          card.innerHTML = `
-            <div class="date">${dateLabel}</div>
-            <h2 class="title">${title}</h2>
-            <div class="meta">
-              ${place ? `<span class="badge">${place}</span>` : ''}
-              ${level ? `<span class="badge">${level}</span>` : ''}
-              ${price ? `<span class="badge price">${price}</span>` : ''}
-            </div>
-            <a class="link" href="${url}" target="_blank" rel="noopener">
-              <span>Voir le détail du cours</span>
-            </a>
-          `;
-          container.appendChild(card);
-        });
-
-      }catch(err){
-        console.error(err);
-        document.getElementById('status').textContent = '';
-        msg.innerHTML = '<div class="error">Erreur de chargement : '
-                        + (err.message || err.toString()) +
-                        '</div>';
-      }
-    }
-
-    loadCourses();
-  </script>
-</body>
-</html>
+          const url   = course.link ||
