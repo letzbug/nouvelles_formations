@@ -47,6 +47,7 @@
       display:flex;
       flex-direction:column;
       gap:8px;
+      min-height:120px;
     }
     .date{
       font-size:14px;
@@ -77,6 +78,10 @@
       margin-left:auto;
       font-weight:700;
     }
+    .provider{
+      font-size:12px;
+      opacity:.7;
+    }
     .link{
       margin-top:auto;
       font-size:14px;
@@ -101,50 +106,36 @@
   <div class="page">
     <h1>Dernières formations UniPop</h1>
     <p class="sub">
-      Les prochains cours proposés par l’Université populaire (prestataire : UniPop).
+      Les prochains cours proposés par l’Université populaire (prestataire&nbsp;: UniPop).
     </p>
     <div id="courses" class="grid"></div>
     <div id="msg"></div>
   </div>
 
   <script>
-    // API mit den kommenden formations (WordPress REST)
-    const API_URL =
-      'https://www.unipop.lu/wp-json/wp/v2/featured_courses?filter[orderby]=meta_value_num&filter[meta_key]=start_date&filter[order]=asc&per_page=100';
+    // 👉 API des formations (custom post type "fb")
+    // Wenn du im Network-Tab auf "fb" klickst, ist das diese URL:
+    const API_URL = 'https://www.unipop.lu/wp-json/wp/v2/fb?per_page=100';
 
-    // Hilfsfunktionen -----------------------------
-
-    function normalizeDateString(raw){
-      if(!raw) return '';
-      if(typeof raw !== 'string') raw = String(raw);
-      const trimmed = raw.trim();
-      // Format 20251119 -> 2025-11-19
-      if(/^\d{8}$/.test(trimmed)){
-        return (
-          trimmed.slice(0,4) + '-' +
-          trimmed.slice(4,6) + '-' +
-          trimmed.slice(6,8)
-        );
-      }
-      return trimmed;
+    function normalizeText(v){
+      return (v || '').toString().toLowerCase().trim();
     }
 
-    function toDate(raw){
-      const s = normalizeDateString(raw);
-      if(!s) return null;
-      const d = new Date(s);
-      return isNaN(d.getTime()) ? null : d;
-    }
-
-    function getNestedField(obj, keys){
+    function getField(obj, paths){
       if(!obj) return '';
-      for(const k of keys){
-        if(obj[k] !== undefined && obj[k] !== null){
-          const v = obj[k];
-          // meta-Felder können Arrays sein
-          if(Array.isArray(v)) return v[0];
-          return v;
+      for(const p of paths){
+        const parts = p.split('.');
+        let cur = obj;
+        let ok = true;
+        for(const part of parts){
+          if(cur && Object.prototype.hasOwnProperty.call(cur, part)){
+            cur = cur[part];
+          }else{
+            ok = false;
+            break;
+          }
         }
+        if(ok && cur != null && cur !== '') return cur;
       }
       return '';
     }
@@ -156,107 +147,130 @@
       try{
         const res = await fetch(API_URL);
         if(!res.ok) throw new Error('Erreur API: ' + res.status);
-
         const data = await res.json();
+
         const allCourses = Array.isArray(data) ? data : (data.items || []);
 
-        // ----------------- Nur UniPop filtern (Textsuche)
-        const uniPopCourses = allCourses.filter(course => {
-          const acf  = course.acf || {};
-          const meta = course.meta || {};
-          const cand = [
-            acf.provider,
-            acf.prestataire,
-            acf.organizer,
-            acf.organisateur,
-            meta.provider,
-            meta.prestataire,
-            course.prestataire
-          ]
-            .filter(Boolean)
-            .join(' ')
-            .toLowerCase();
-          return cand.includes('unipop');
-        });
-
-        // Wenn Filter nichts findet -> lieber ALLE anzeigen als leer
-        const list = uniPopCourses.length ? uniPopCourses : allCourses;
-
-        // Nach Startdatum sortieren
-        list.sort((a,b) => {
-          const acfA  = a.acf  || {};
-          const metaA = a.meta || {};
-          const acfB  = b.acf  || {};
-          const metaB = b.meta || {};
-
-          const dA = toDate(
-            getNestedField(acfA, ['start_date','date_debut','dateStart']) ||
-            getNestedField(metaA,['start_date','date_debut','dateStart'])
-          ) || new Date(0);
-
-          const dB = toDate(
-            getNestedField(acfB, ['start_date','date_debut','dateStart']) ||
-            getNestedField(metaB,['start_date','date_debut','dateStart'])
-          ) || new Date(0);
-
-          return dA - dB;
-        });
-
-        // Optional begrenzen (z.B. auf 12 Kurse)
-        const latest = list.slice(0, 12);
-
-        if(!latest.length){
-          msg.innerHTML =
-            '<div class="error">Aucune formation UniPop trouvée pour le moment.</div>';
+        if(!allCourses.length){
+          msg.innerHTML = '<div class="error">Aucune formation trouvée dans l’API.</div>';
           return;
         }
 
+        // --- Provider/Prestataire erkennen
+        const withProvider = allCourses.map(c => {
+          const acf = c.acf || {};
+          const meta = c.meta || {};
+
+          const provider = getField({acf, meta, c}, [
+            'acf.provider',
+            'acf.prestataire',
+            'acf.organizer',
+            'acf.organisateur',
+            'meta.provider',
+            'meta.prestataire'
+          ]);
+
+          return { raw:c, provider };
+        });
+
+        // Nur UniPop – aber wenn das 0 ist, fallback auf alles
+        let onlyUniPop = withProvider.filter(item =>
+          normalizeText(item.provider).includes('unipop')
+        );
+
+        if(onlyUniPop.length === 0){
+          // Fallback: alles anzeigen, wenn Provider-Feld nicht gefunden wird
+          onlyUniPop = withProvider;
+        }
+
+        // Datum holen aus verschiedenen möglichen Feldern
+        function getDate(c){
+          const acf = c.acf || {};
+          const meta = c.meta || {};
+          return getField({acf, meta, c}, [
+            'acf.start_date',
+            'acf.date_debut',
+            'acf.dateStart',
+            'meta.start_date',
+            'meta.date_debut',
+            'meta.dateStart',
+            'date'
+          ]);
+        }
+
+        // nach Datum sortieren
+        onlyUniPop.sort((a,b) => {
+          const da = new Date(getDate(a.raw) || '2100-01-01');
+          const db = new Date(getDate(b.raw) || '2100-01-01');
+          return da - db;
+        });
+
+        // optional nur die nächsten 20 anzeigen
+        const latest = onlyUniPop.slice(0, 20);
+
         container.innerHTML = '';
 
-        latest.forEach(course => {
-          const acf  = course.acf  || {};
+        latest.forEach(item => {
+          const course = item.raw;
+          const acf = course.acf || {};
           const meta = course.meta || {};
 
-          const title =
-            (course.title && course.title.rendered) ||
-            acf.title ||
-            meta.title ||
-            'Titre à définir';
+          const title = getField(course, [
+            'title.rendered',
+            'title',
+            'acf.title',
+            'meta.title'
+          ]) || 'Titre à définir';
 
-          const startRaw =
-            getNestedField(acf,  ['start_date','date_debut','dateStart']) ||
-            getNestedField(meta, ['start_date','date_debut','dateStart']);
+          const start = getDate(course);
+          const end = getField({acf, meta, course}, [
+            'acf.end_date',
+            'acf.date_fin',
+            'acf.dateEnd',
+            'meta.end_date',
+            'meta.date_fin',
+            'meta.dateEnd'
+          ]);
 
-          const endRaw   =
-            getNestedField(acf,  ['end_date','date_fin','dateEnd']) ||
-            getNestedField(meta, ['end_date','date_fin','dateEnd']);
+          const place = getField({acf, meta}, [
+            'acf.location',
+            'acf.lieu',
+            'meta.location',
+            'meta.lieu'
+          ]);
 
-          const start = normalizeDateString(startRaw);
-          const end   = normalizeDateString(endRaw);
+          const level = getField({acf, meta}, [
+            'acf.level',
+            'acf.niveau',
+            'meta.level',
+            'meta.niveau'
+          ]);
+
+          const price = getField({acf, meta}, [
+            'acf.price',
+            'acf.prix',
+            'meta.price',
+            'meta.prix'
+          ]);
+
+          const url = getField(course, [
+            'link',
+            'acf.url',
+            'meta.url'
+          ]) || '#';
+
+          const provider = item.provider || '';
 
           const dateLabel = start
             ? (end && end !== start ? `${start} – ${end}` : start)
             : '';
-
-          const place =
-            getNestedField(acf,  ['location','lieu']) ||
-            getNestedField(meta, ['location','lieu']);
-
-          const level =
-            getNestedField(acf,  ['level','niveau']) ||
-            getNestedField(meta, ['level','niveau']);
-
-          const price =
-            getNestedField(acf,  ['price','prix']) ||
-            getNestedField(meta, ['price','prix']);
-
-          const url = course.link || acf.url || meta.url || '#';
 
           const card = document.createElement('article');
           card.className = 'card';
           card.innerHTML = `
             ${dateLabel ? `<div class="date">${dateLabel}</div>` : ''}
             <h2 class="title">${title}</h2>
+            ${provider ? `<div class="provider">Prestataire&nbsp;: ${provider}</div>` : ''}
             <div class="meta">
               ${place ? `<span class="badge">${place}</span>` : ''}
               ${level ? `<span class="badge">${level}</span>` : ''}
@@ -269,10 +283,9 @@
           container.appendChild(card);
         });
 
-      } catch (err){
+      }catch(err){
         console.error(err);
-        msg.innerHTML =
-          '<div class="error">Impossible de charger les formations. Merci de réessayer plus tard.</div>';
+        msg.innerHTML = '<div class="error">Impossible de charger les formations. Merci de réessayer plus tard.</div>';
       }
     }
 
@@ -280,4 +293,3 @@
   </script>
 </body>
 </html>
-
